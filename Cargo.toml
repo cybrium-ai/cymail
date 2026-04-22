@@ -1,0 +1,23 @@
+[package]
+name = "cymail"
+version = "0.1.0"
+edition = "2021"
+authors = ["Cybrium AI <hello@cybrium.ai>"]
+description = "Email security scanner — SPF, DKIM, DMARC, MTA-STS, SMTP analysis"
+license = "MIT"
+repository = "https://github.com/cybrium-ai/cymail"
+[[bin]]
+name = "cymail"
+path = "src/main.rs"
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+colored = "2"
+hickory-resolver = "0.25"
+[profile.release]
+opt-level = 3
+lto = true
+strip = true
