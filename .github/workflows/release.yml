@@ -1,0 +1,99 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+  packages: write
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: cymail-linux-amd64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: cymail-linux-arm64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            name: cymail-darwin-amd64
+            sign: true
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            name: cymail-darwin-arm64
+            sign: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Cross-compile tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config.toml
+      - run: cargo build --release --target ${{ matrix.target }}
+      - name: Sign macOS binary
+        if: matrix.sign
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE_BASE64" ]; then
+            CERT_PATH=$RUNNER_TEMP/cert.p12
+            KEYCHAIN_PATH=$RUNNER_TEMP/signing.keychain-db
+            KEYCHAIN_PASSWORD=$(openssl rand -hex 16)
+            echo -n "$APPLE_CERTIFICATE_BASE64" | base64 --decode -o $CERT_PATH
+            security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+            security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+            security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+            security import $CERT_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+            security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+            security list-keychain -d user -s $KEYCHAIN_PATH
+            codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp --options runtime target/${{ matrix.target }}/release/cymail
+          fi
+      - name: Notarize
+        if: matrix.sign
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_ID" ]; then
+            ditto -c -k --keepParent target/${{ matrix.target }}/release/cymail /tmp/cymail.zip
+            xcrun notarytool submit /tmp/cymail.zip --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait || true
+          fi
+      - run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/cymail dist/${{ matrix.name }}
+          chmod +x dist/${{ matrix.name }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ matrix.name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Checksums
+        run: cd artifacts && for dir in */; do (cd "$dir" && sha256sum * >> ../checksums.txt); done
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/cymail-linux-amd64/cymail-linux-amd64
+            artifacts/cymail-linux-arm64/cymail-linux-arm64
+            artifacts/cymail-darwin-amd64/cymail-darwin-amd64
+            artifacts/cymail-darwin-arm64/cymail-darwin-arm64
+            artifacts/checksums.txt
