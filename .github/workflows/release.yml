@@ -14,16 +14,19 @@ jobs:
             os: ubuntu-latest
             name: cymail-linux-amd64
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
             name: cymail-linux-arm64
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-13
             name: cymail-darwin-amd64
             sign: true
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: macos-14
             name: cymail-darwin-arm64
             sign: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            name: cymail-windows-amd64.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -31,12 +34,6 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - name: Cross-compile tools
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config.toml
-          echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config.toml
       - run: cargo build --release --target ${{ matrix.target }}
       - name: Sign macOS binary
         if: matrix.sign
@@ -69,10 +66,17 @@ jobs:
             ditto -c -k --keepParent target/${{ matrix.target }}/release/cymail /tmp/cymail.zip
             xcrun notarytool submit /tmp/cymail.zip --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait || true
           fi
-      - run: |
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/cymail dist/${{ matrix.name }}
           chmod +x dist/${{ matrix.name }}
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir dist
+          cp target/${{ matrix.target }}/release/cymail.exe dist/${{ matrix.name }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
@@ -96,4 +100,5 @@ jobs:
             artifacts/cymail-linux-arm64/cymail-linux-arm64
             artifacts/cymail-darwin-amd64/cymail-darwin-amd64
             artifacts/cymail-darwin-arm64/cymail-darwin-arm64
+            artifacts/cymail-windows-amd64.exe/cymail-windows-amd64.exe
             artifacts/checksums.txt
