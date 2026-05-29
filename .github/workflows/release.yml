@@ -5,6 +5,7 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write    # OIDC for Azure Trusted Signing
 jobs:
   build:
     strategy:
@@ -78,6 +79,38 @@ jobs:
           mkdir dist
           cp target/${{ matrix.target }}/release/cymail.exe dist/${{ matrix.name }}
       - uses: actions/upload-artifact@v4
+
+      - name: Azure login (federated OIDC)
+        if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v')
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Sign Windows binary via Azure Trusted Signing
+        if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v')
+        uses: Azure/trusted-signing-action@v0.5
+        with:
+          azure-tenant-id:              ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id:              ${{ secrets.AZURE_CLIENT_ID }}
+          endpoint:                     https://cus.codesigning.azure.net/
+          trusted-signing-account-name: cybrium-signing
+          certificate-profile-name:     cybrium
+          files-folder:                 dist
+          files-folder-filter:          exe
+          file-digest:                  SHA256
+          timestamp-rfc3161:            http://timestamp.acs.microsoft.com
+          timestamp-digest:             SHA256
+
+      - name: Verify Windows signature
+        if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature "dist/${{ matrix.name }}"
+          Write-Host "Signature status: $($sig.Status)"
+          Write-Host "Signer: $($sig.SignerCertificate.Subject)"
+          if ($sig.Status -ne 'Valid') { throw "Signature verification failed: $($sig.Status)" }
         with:
           name: ${{ matrix.name }}
           path: dist/${{ matrix.name }}
