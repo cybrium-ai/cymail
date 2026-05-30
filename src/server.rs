@@ -157,6 +157,12 @@ th{{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;l
 .mode-card h3{{margin:0 0 4px;font-size:13px;color:var(--primary-2);}}
 .mode-card p{{margin:0;color:var(--muted);font-size:12px;}}
 .row{{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}}
+.scan-bar{{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 18px;margin-bottom:18px;}}
+.scan-bar input[type=text]{{flex:1;min-width:240px;}}
+.protocol-rows{{display:flex;flex-direction:column;gap:8px;margin-top:8px;}}
+.protocol-row{{display:flex;align-items:center;gap:12px;padding:8px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;font-size:13px;}}
+.protocol-row .pname{{font-weight:600;width:60px;}}
+.protocol-row .ppolicy{{color:var(--muted);font-family:ui-monospace,monospace;font-size:12px;margin-left:auto;}}
 footer{{padding:18px 28px;color:var(--muted);font-size:12px;border-top:1px solid var(--border);text-align:center;}}
 @media print{{html,body{{background:white;color:black;}} header{{background:white;}} .card,.stat,.mode-card{{background:white;}}}}
 </style></head><body>
@@ -174,6 +180,36 @@ footer{{padding:18px 28px;color:var(--muted);font-size:12px;border-top:1px solid
 
 fn page_footer() -> &'static str {
     "</main><footer>cymail · Cybrium AI · <a href='https://github.com/cybrium-ai/cymail'>github.com/cybrium-ai/cymail</a></footer></body></html>"
+}
+
+/// Compact inline form rendered at the top of every result page so
+/// the user can immediately run another scan without going back to
+/// the landing page. Mode pre-selected to whatever was last run.
+fn new_scan_form(current_mode: &str, current_domain: &str) -> String {
+    let current = current_mode.trim_start_matches('/');
+    let mode_opt = |val: &str, label: &str| {
+        let sel = if val.trim_start_matches('/') == current { " selected" } else { "" };
+        format!("<option value='{val}'{sel}>{label}</option>")
+    };
+    format!(r##"<form method='get' action='/{current_mode}' id='cymail-form' class='scan-bar'>
+  <input type='text' name='domain' id='domain' placeholder='example.com' value='{}' required />
+  <select name='__mode' id='mode'>
+    {}{}{}{}
+  </select>
+  <button type='submit' class='primary'>Run scan</button>
+  <a href='/'><button type='button'>Home</button></a>
+</form>
+<script>
+document.getElementById('mode').addEventListener('change',function(){{
+  document.getElementById('cymail-form').action=this.value;
+}});
+</script>"##,
+        html_esc(current_domain),
+        mode_opt("/scan",       "scan — SPF/DKIM/DMARC posture"),
+        mode_opt("/discover",   "discover — emails + reputation"),
+        mode_opt("/reputation", "reputation — DNSBL/BIMI/DANE/DNSSEC"),
+        mode_opt("/leak",       "leak — HIBP/GitHub/lookalikes"),
+    )
 }
 
 fn html_esc(s: &str) -> String {
@@ -243,7 +279,7 @@ async fn handle_scan(Query(q): Query<DomainQ>) -> Response {
         &format!("cymail · scan · {d}"), "scan", Some(d),
         Some(&format!("/scan{}", qs(d))),
     );
-    Html(format!("{header}{}{}", export::email_report_to_html_body(&r), page_footer())).into_response()
+    Html(format!("{header}{}{}{}", new_scan_form("scan", d), export::email_report_to_html_body(&r), page_footer())).into_response()
 }
 async fn handle_discover(Query(q): Query<DomainQ>) -> Response {
     let d = match require_domain(&q) { Ok(d) => d, Err(r) => return r };
@@ -252,7 +288,7 @@ async fn handle_discover(Query(q): Query<DomainQ>) -> Response {
         &format!("cymail · discover · {d}"), "discover", Some(d),
         Some(&format!("/discover{}", qs(d))),
     );
-    Html(format!("{header}{}{}", export::discovery_to_html_body(&r), page_footer())).into_response()
+    Html(format!("{header}{}{}{}", new_scan_form("discover", d), export::discovery_to_html_body(&r), page_footer())).into_response()
 }
 async fn handle_reputation(Query(q): Query<DomainQ>) -> Response {
     let d = match require_domain(&q) { Ok(d) => d, Err(r) => return r };
@@ -261,7 +297,7 @@ async fn handle_reputation(Query(q): Query<DomainQ>) -> Response {
         &format!("cymail · reputation · {d}"), "reputation", Some(d),
         Some(&format!("/reputation{}", qs(d))),
     );
-    Html(format!("{header}{}{}", export::reputation_to_html_body(&r), page_footer())).into_response()
+    Html(format!("{header}{}{}{}", new_scan_form("reputation", d), export::reputation_to_html_body(&r), page_footer())).into_response()
 }
 async fn handle_leak(Query(q): Query<DomainQ>) -> Response {
     let d = match require_domain(&q) { Ok(d) => d, Err(r) => return r };
@@ -270,12 +306,13 @@ async fn handle_leak(Query(q): Query<DomainQ>) -> Response {
         &format!("cymail · leak · {d}"), "leak", Some(d),
         Some(&format!("/leak{}", qs(d))),
     );
-    Html(format!("{header}{}{}", export::leak_to_html_body(&r), page_footer())).into_response()
+    Html(format!("{header}{}{}{}", new_scan_form("leak", d), export::leak_to_html_body(&r), page_footer())).into_response()
 }
 async fn handle_attest() -> Response {
     let r = attest::attest();
     let header = page_chrome("cymail · attest", "attest", None, None);
-    let body = format!(
+    let form = new_scan_form("scan", "");
+    let attest_body = format!(
         "<div class='card'><h2>Host root-of-trust</h2>\
          <div class='grid'>\
            <div class='stat'><div class='stat-value'>{}</div><div class='stat-label'>OS</div></div>\
@@ -290,7 +327,7 @@ async fn handle_attest() -> Response {
         if r.root_of_trust.present { "yes" } else { "no" },
         html_esc(&r.host), html_esc(&r.root_of_trust.vendor),
     );
-    Html(format!("{header}{body}{}", page_footer())).into_response()
+    Html(format!("{header}{form}{attest_body}{}", page_footer())).into_response()
 }
 
 fn qs(domain: &str) -> String {
