@@ -8,6 +8,11 @@ mod hardware_rot;
 mod attest;
 mod reputation;
 mod leak;
+mod export;
+mod scan;
+mod server;
+mod update;
+mod upgrade;
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -86,6 +91,20 @@ enum Commands {
         #[arg(long, default_value_t = 90)]
         lookback_days: u32,
     },
+    /// Start the embedded web UI (v0.5 — P4).
+    Serve {
+        /// Bind address — defaults to 127.0.0.1:7777 for local-only.
+        #[arg(short, long, default_value = "127.0.0.1:7777")]
+        bind: String,
+    },
+    /// Refresh local threat-intel caches (no binary change) (v0.5 — P4).
+    Update,
+    /// Self-update the cymail binary from the latest signed GitHub Release (v0.5 — P4).
+    Upgrade {
+        /// Print what would happen but don't actually swap the binary.
+        #[arg(long)]
+        dry_run: bool,
+    },
     Version,
 }
 
@@ -133,14 +152,14 @@ async fn main() {
     match cli.command {
         Commands::Scan { domain, format } => {
             print_banner();
-            let r = scan_domain(&domain).await;
+            let r = scan::scan_domain(&domain).await;
             output::print_report(&r, &format);
         }
         Commands::Bulk { file } => {
             print_banner();
             if let Ok(c) = std::fs::read_to_string(&file) {
                 for d in c.lines().filter(|l| !l.trim().is_empty()) {
-                    let r = scan_domain(d.trim()).await;
+                    let r = scan::scan_domain(d.trim()).await;
                     eprintln!(
                         "  {} {} — {} {}/100",
                         if r.score >= 75 { "✓" } else { "✗" },
@@ -183,29 +202,54 @@ async fn main() {
             let r = leak::run(&domain, &opts).await;
             print_leak(&r, &format);
         }
+        Commands::Serve { bind } => {
+            print_banner();
+            let addr: std::net::SocketAddr = bind.parse().unwrap_or_else(|_| {
+                eprintln!("  invalid --bind {bind}; defaulting to 127.0.0.1:7777");
+                "127.0.0.1:7777".parse().unwrap()
+            });
+            if let Err(e) = server::serve(addr).await {
+                eprintln!("  serve error: {e}");
+            }
+        }
+        Commands::Update => {
+            print_banner();
+            match update::update() {
+                Ok(r) => {
+                    println!("  cache dir: {}", r.cache_dir.display());
+                    println!("  refreshed: {}", r.feeds_refreshed.join(", "));
+                    for s in &r.feeds_skipped { println!("  skipped:   {s}"); }
+                    println!("  bytes written: {}", r.bytes_written);
+                }
+                Err(e) => eprintln!("  update failed: {e}"),
+            }
+        }
+        Commands::Upgrade { dry_run } => {
+            print_banner();
+            let mut opts = upgrade::UpgradeOpts::default();
+            opts.dry_run = dry_run;
+            match upgrade::upgrade(&opts).await {
+                Ok(msg) => println!("  {msg}"),
+                Err(e)  => {
+                    eprintln!("  upgrade: {e}");
+                    std::process::exit(if matches!(e, upgrade::UpgradeError::AlreadyLatest) { 0 } else { 1 });
+                }
+            }
+        }
         Commands::Version => {
             println!("cymail {} — Cybrium AI Email Scanner", env!("CARGO_PKG_VERSION"));
         }
     }
 }
 
-async fn scan_domain(domain: &str) -> EmailReport {
-    let s = spf::check(domain).await;
-    let dk = dkim::check(domain).await;
-    let dm = dmarc::check(domain).await;
-    let (score, grade, findings) = scoring::calculate(&s, &dk, &dm);
-    EmailReport {
-        domain: domain.into(),
-        spf: s, dkim: dk, dmarc: dm,
-        score, grade, findings,
-        scanned_at: chrono::Utc::now().to_rfc3339(),
-    }
-}
 
 fn print_discovery(r: &discover::DiscoveryReport, format: &str) {
-    if format == "json" {
-        println!("{}", serde_json::to_string_pretty(r).unwrap_or_default());
-        return;
+    match format {
+        "json"  => { println!("{}", export::to_json(r)); return; }
+        "sarif" => { println!("{}", export::discovery_to_sarif(r)); return; }
+        "csv"   => { println!("{}", export::discovery_to_csv(r)); return; }
+        "html"  => { println!("{}", export::discovery_to_html(r)); return; }
+        _ => {}
     }
     eprintln!("  \x1b[35m\x1b[1mDiscovery\x1b[0m  domain: \x1b[1m{}\x1b[0m", r.domain);
     eprintln!("  MX hosts:  {}", if r.mx_hosts.is_empty() { "(none)".into() } else { r.mx_hosts.join(", ") });
@@ -251,9 +295,12 @@ fn print_attestation(r: &attest::AttestationReport, format: &str) {
 }
 
 fn print_reputation(r: &reputation::ReputationReport, format: &str) {
-    if format == "json" {
-        println!("{}", serde_json::to_string_pretty(r).unwrap_or_default());
-        return;
+    match format {
+        "json"  => { println!("{}", export::to_json(r)); return; }
+        "sarif" => { println!("{}", export::reputation_to_sarif(r)); return; }
+        "csv"   => { println!("{}", export::reputation_to_csv(r)); return; }
+        "html"  => { println!("{}", export::reputation_to_html(r)); return; }
+        _ => {}
     }
     eprintln!("  \x1b[35m\x1b[1mReputation\x1b[0m  domain: \x1b[1m{}\x1b[0m  ({} ms)\n", r.domain, r.elapsed_ms);
     eprintln!("  Provider:  {} ({})", r.provider.vendor, r.provider.category);
@@ -309,9 +356,12 @@ fn print_reputation(r: &reputation::ReputationReport, format: &str) {
 }
 
 fn print_leak(r: &leak::LeakReport, format: &str) {
-    if format == "json" {
-        println!("{}", serde_json::to_string_pretty(r).unwrap_or_default());
-        return;
+    match format {
+        "json"  => { println!("{}", export::to_json(r)); return; }
+        "sarif" => { println!("{}", export::leak_to_sarif(r)); return; }
+        "csv"   => { println!("{}", export::leak_to_csv(r)); return; }
+        "html"  => { println!("{}", export::leak_to_html(r)); return; }
+        _ => {}
     }
     eprintln!("  \x1b[35m\x1b[1mLeak telemetry\x1b[0m  domain: \x1b[1m{}\x1b[0m  ({} ms)\n", r.domain, r.elapsed_ms);
     eprintln!("  Sources queried: {}", r.sources_queried.join(", "));

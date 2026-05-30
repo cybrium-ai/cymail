@@ -1,6 +1,6 @@
 [package]
 name = "cymail"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 authors = ["Cybrium AI <hello@cybrium.ai>"]
 description = "Email security scanner — SPF/DKIM/DMARC posture, discovery, reputation, hardware-RoT attestation"
@@ -26,6 +26,10 @@ hickory-resolver = "0.25"
 # without OpenSSL ABI churn.
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 rand = "0.8"
+# v0.5 — exports (sarif/csv/html) need sha2 for self-update checksum
+# verification + axum for the embedded web UI.
+sha2 = "0.10"
+axum = "0.7"
 
 [profile.release]
 opt-level = 3
