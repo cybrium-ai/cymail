@@ -289,6 +289,167 @@ fn html_esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
+// ─── HTML body fragments (no <html>/<head>/<body> wrapper) ────────
+//
+// Used by the embedded web UI in server.rs which provides its own
+// chrome (real Cybrium shield + wordmark, sticky export pills,
+// platform-matched dark tokens). The `*_to_html()` functions below
+// keep the full standalone wrapper for CLI `--format html`.
+
+pub fn email_report_to_html_body(r: &EmailReport) -> String {
+    let mut h = String::new();
+    h.push_str(&format!("<div class='card'><h2>Posture · {}</h2>", html_esc(&r.domain)));
+    h.push_str(&format!("<div class='grid'>\
+        <div class='stat'><div class='stat-value'>{}</div><div class='stat-label'>Score / 100</div></div>\
+        <div class='stat'><div class='stat-value'>{}</div><div class='stat-label'>Grade</div></div>\
+        <div class='stat'><div class='stat-value'>{}/{}/{}</div><div class='stat-label'>SPF · DKIM · DMARC</div></div>\
+    </div></div>",
+        r.score, html_esc(&r.grade),
+        if r.spf.configured { "✓" } else { "✗" },
+        if r.dkim.configured { "✓" } else { "✗" },
+        if r.dmarc.configured { "✓" } else { "✗" }));
+    h.push_str("<div class='card'><h2>Findings</h2>");
+    if r.findings.is_empty() {
+        h.push_str("<p class='card-hint ok'>No findings.</p>");
+    } else {
+        h.push_str("<table><tr><th>Severity</th><th>ID</th><th>Title</th><th>Description</th></tr>");
+        for f in &r.findings {
+            let cls = match f.severity.as_str() {
+                "critical" => "crit", "high" => "err", "medium" => "warn", _ => "ok",
+            };
+            h.push_str(&format!(
+                "<tr><td><span class='badge {cls}'>{}</span></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_esc(&f.severity), html_esc(&f.id), html_esc(&f.title), html_esc(&f.description)));
+        }
+        h.push_str("</table>");
+    }
+    h.push_str(&format!("<p class='card-hint'>Scanned at {}</p></div>", html_esc(&r.scanned_at)));
+    h
+}
+
+pub fn discovery_to_html_body(r: &DiscoveryReport) -> String {
+    let mut h = String::new();
+    h.push_str(&format!("<div class='card'><h2>Discovery · {}</h2>", html_esc(&r.domain)));
+    h.push_str(&format!("<div class='grid'>\
+        <div class='stat'><div class='stat-value'>{}</div><div class='stat-label'>Addresses</div></div>\
+        <div class='stat'><div class='stat-value'>{}</div><div class='stat-label'>MX hosts</div></div>\
+        <div class='stat'><div class='stat-value'>{}</div><div class='stat-label'>Catch-all</div></div>\
+        <div class='stat'><div class='stat-value'>{}</div><div class='stat-label'>Sources</div></div>\
+    </div></div>",
+        r.emails.len(), r.mx_hosts.len(),
+        match r.catch_all { Some(true) => "yes", Some(false) => "no", None => "—" },
+        r.sources_queried.len()));
+    h.push_str("<div class='card'><h2>Discovered emails</h2>");
+    h.push_str("<table><tr><th>Address</th><th>Source</th><th>Validated</th><th>Flags</th></tr>");
+    for e in &r.emails {
+        let v = match e.validated {
+            Some(true) => "<span class='ok'>✓</span>",
+            Some(false) => "<span class='err'>✗</span>",
+            None => "<span class='card-hint'>—</span>",
+        };
+        let flags = e.reputation.as_ref().map(|x| {
+            let mut b = String::new();
+            if x.blacklisted.unwrap_or(false)         { b.push_str("<span class='badge err'>blacklisted</span> "); }
+            if x.malicious.unwrap_or(false)           { b.push_str("<span class='badge err'>malicious</span> "); }
+            if x.credentials_leaked.unwrap_or(false)  { b.push_str("<span class='badge warn'>creds-leaked</span> "); }
+            if x.data_breach.unwrap_or(false)         { b.push_str("<span class='badge warn'>in-breach</span> "); }
+            b
+        }).unwrap_or_default();
+        h.push_str(&format!("<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            html_esc(&e.address), html_esc(&e.source), v, flags));
+    }
+    h.push_str("</table></div>");
+    h
+}
+
+pub fn reputation_to_html_body(r: &ReputationReport) -> String {
+    let mut h = String::new();
+    h.push_str(&format!("<div class='card'><h2>Reputation · {}</h2>", html_esc(&r.domain)));
+    h.push_str(&format!("<div class='grid'>\
+        <div class='stat'><div class='stat-value'>{}</div><div class='stat-label'>Provider</div></div>\
+        <div class='stat'><div class='stat-value'>{}</div><div class='stat-label'>DNSSEC</div></div>\
+        <div class='stat'><div class='stat-value'>{}/{}</div><div class='stat-label'>SPF lookups</div></div>\
+        <div class='stat'><div class='stat-value'>{}</div><div class='stat-label'>DNSBL listings</div></div>\
+    </div></div>",
+        html_esc(&r.provider.vendor),
+        if r.dnssec.signed { "signed" } else { "unsigned" },
+        r.spf_lookups.lookup_count, r.spf_lookups.limit,
+        r.dnsbl.blacklisted_listings));
+
+    h.push_str("<div class='card'><h2>DNSBL queries</h2><table><tr><th>List</th><th>Kind</th><th>Target</th><th>Listed</th></tr>");
+    for hit in &r.dnsbl.queries {
+        let cls = if hit.listed && hit.kind == "blacklist" { "err" } else if hit.listed { "ok" } else { "" };
+        h.push_str(&format!("<tr><td>{}</td><td>{}</td><td><code>{}</code></td><td class='{cls}'>{}</td></tr>",
+            html_esc(&hit.list), html_esc(&hit.kind), html_esc(&hit.target),
+            if hit.listed { "yes" } else { "no" }));
+    }
+    h.push_str("</table></div>");
+
+    h.push_str("<div class='card'><h2>DKIM keys</h2><table><tr><th>Selector</th><th>Algorithm</th><th>Bits</th><th>Hygiene</th><th>Note</th></tr>");
+    for k in &r.dkim_hygiene {
+        let cls = match k.hygiene.as_str() { "ok" => "ok", "weak" => "warn", _ => "err" };
+        h.push_str(&format!("<tr><td>{}</td><td>{}</td><td>{}</td><td class='{cls}'>{}</td><td>{}</td></tr>",
+            html_esc(&k.selector), html_esc(&k.algorithm.clone().unwrap_or_default()),
+            k.key_bits.map(|n| n.to_string()).unwrap_or_default(),
+            html_esc(&k.hygiene), html_esc(&k.issue.clone().unwrap_or_default())));
+    }
+    h.push_str("</table></div>");
+    h
+}
+
+pub fn leak_to_html_body(r: &LeakReport) -> String {
+    let mut h = String::new();
+    h.push_str(&format!("<div class='card'><h2>Leak telemetry · {}</h2>", html_esc(&r.domain)));
+    h.push_str(&format!("<div class='grid'>\
+        <div class='stat'><div class='stat-value'>{}</div><div class='stat-label'>Breaches</div></div>\
+        <div class='stat'><div class='stat-value'>{}</div><div class='stat-label'>GitHub hits</div></div>\
+        <div class='stat'><div class='stat-value'>{}</div><div class='stat-label'>Lookalikes w/ certs</div></div>\
+    </div></div>",
+        r.breaches.len(), r.github_leaks.len(),
+        r.lookalike_domains.iter().filter(|l| l.cert_issued).count()));
+
+    h.push_str("<div class='card'><h2>Breaches (HIBP)</h2>");
+    if r.breaches.is_empty() { h.push_str("<p class='card-hint ok'>None.</p>"); }
+    else {
+        h.push_str("<table><tr><th>Title</th><th>Date</th><th>Accounts</th><th>Data classes</th></tr>");
+        for b in &r.breaches {
+            h.push_str(&format!("<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_esc(&b.title), html_esc(&b.breach_date.clone().unwrap_or_default()),
+                b.pwn_count.map(|n| n.to_string()).unwrap_or_default(),
+                html_esc(&b.data_classes.join(", "))));
+        }
+        h.push_str("</table>");
+    }
+    h.push_str("</div>");
+
+    h.push_str("<div class='card'><h2>GitHub code hits</h2>");
+    if r.github_leaks.is_empty() { h.push_str("<p class='card-hint ok'>None.</p>"); }
+    else {
+        h.push_str("<table><tr><th>Repo</th><th>Path</th><th>Link</th></tr>");
+        for h2 in &r.github_leaks {
+            h.push_str(&format!("<tr><td><code>{}</code></td><td><code>{}</code></td><td><a href='{}' target='_blank' rel='noopener'>open</a></td></tr>",
+                html_esc(&h2.repo), html_esc(&h2.path), html_esc(&h2.html_url)));
+        }
+        h.push_str("</table>");
+    }
+    h.push_str("</div>");
+
+    h.push_str("<div class='card'><h2>Lookalike domains</h2>");
+    let cert: Vec<_> = r.lookalike_domains.iter().filter(|l| l.cert_issued).collect();
+    if cert.is_empty() { h.push_str("<p class='card-hint ok'>No cert-bearing variants.</p>"); }
+    else {
+        h.push_str("<table><tr><th>Variant</th><th>Type</th><th>Cert at</th></tr>");
+        for la in cert {
+            h.push_str(&format!("<tr><td class='err'><code>{}</code></td><td>{}</td><td>{}</td></tr>",
+                html_esc(&la.variant), html_esc(&la.variant_type),
+                html_esc(&la.recent_cert_at.clone().unwrap_or_default())));
+        }
+        h.push_str("</table>");
+    }
+    h.push_str("</div>");
+    h
+}
+
 pub fn email_report_to_html(r: &EmailReport) -> String {
     let mut h = String::from(HTML_HEAD);
     h.push_str(&format!("<h1>cymail · scan · {}</h1>", html_esc(&r.domain)));
