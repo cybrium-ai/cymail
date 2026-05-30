@@ -302,12 +302,25 @@ pub fn email_report_to_html_body(r: &EmailReport) -> String {
     h.push_str(&format!("<div class='grid'>\
         <div class='stat'><div class='stat-value'>{}</div><div class='stat-label'>Score / 100</div></div>\
         <div class='stat'><div class='stat-value'>{}</div><div class='stat-label'>Grade</div></div>\
-        <div class='stat'><div class='stat-value'>{}/{}/{}</div><div class='stat-label'>SPF · DKIM · DMARC</div></div>\
-    </div></div>",
-        r.score, html_esc(&r.grade),
-        if r.spf.configured { "✓" } else { "✗" },
-        if r.dkim.configured { "✓" } else { "✗" },
-        if r.dmarc.configured { "✓" } else { "✗" }));
+    </div>",
+        r.score, html_esc(&r.grade)));
+
+    // Per-protocol rows — replaces the cramped ✓/✗/✓ tri-stat.
+    h.push_str("<div class='protocol-rows'>");
+    for (name, proto) in [("SPF", &r.spf), ("DKIM", &r.dkim), ("DMARC", &r.dmarc)] {
+        let (badge_cls, badge_txt) = if proto.configured {
+            ("ok", "pass")
+        } else {
+            ("err", "fail")
+        };
+        let policy = proto.policy.as_deref().unwrap_or("—");
+        h.push_str(&format!(
+            "<div class='protocol-row'><span class='pname'>{name}</span>\
+             <span class='badge {badge_cls}'>{badge_txt}</span>\
+             <span class='ppolicy'>policy: {}</span></div>",
+            html_esc(policy)));
+    }
+    h.push_str("</div></div>");
     h.push_str("<div class='card'><h2>Findings</h2>");
     if r.findings.is_empty() {
         h.push_str("<p class='card-hint ok'>No findings.</p>");
