@@ -1,14 +1,18 @@
 [package]
 name = "cymail"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Cybrium AI <hello@cybrium.ai>"]
-description = "Email security scanner — SPF, DKIM, DMARC, MTA-STS, SMTP analysis"
+description = "Email security scanner — SPF/DKIM/DMARC posture, discovery, reputation, hardware-RoT attestation"
 license = "Apache-2.0"
 repository = "https://github.com/cybrium-ai/cymail"
+keywords = ["email", "security", "spf", "dkim", "dmarc"]
+categories = ["command-line-utilities", "email"]
+
 [[bin]]
 name = "cymail"
 path = "src/main.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
@@ -17,6 +21,12 @@ serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
 colored = "2"
 hickory-resolver = "0.25"
+# v0.2 — discovery + reputation HTTP clients (crt.sh, EmailRep.io).
+# Rustls-only so the binary stays statically linkable across distros
+# without OpenSSL ABI churn.
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+rand = "0.8"
+
 [profile.release]
 opt-level = 3
 lto = true
