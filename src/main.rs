@@ -7,6 +7,7 @@ mod discover;
 mod hardware_rot;
 mod attest;
 mod reputation;
+mod leak;
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -65,6 +66,25 @@ enum Commands {
         /// Comma-separated DKIM selectors to probe in addition to defaults.
         #[arg(long, value_delimiter = ',')]
         dkim_selectors: Vec<String>,
+    },
+    /// Leak + impersonation telemetry — HIBP, GitHub code search, lookalike domains via crt.sh (v0.4 — P3).
+    Leak {
+        #[arg(short, long)]
+        domain: String,
+        #[arg(short = 'f', long, default_value = "text")]
+        format: String,
+        /// Skip HIBP breach lookup.
+        #[arg(long)]
+        no_hibp: bool,
+        /// Skip GitHub code search.
+        #[arg(long)]
+        no_github: bool,
+        /// Skip lookalike domain enumeration + crt.sh checks.
+        #[arg(long)]
+        no_lookalikes: bool,
+        /// crt.sh cert lookback window for lookalikes (days).
+        #[arg(long, default_value_t = 90)]
+        lookback_days: u32,
     },
     Version,
 }
@@ -152,6 +172,16 @@ async fn main() {
             opts.dkim_selectors.extend(dkim_selectors.into_iter().filter(|s| !s.trim().is_empty()));
             let r = reputation::run(&domain, &opts).await;
             print_reputation(&r, &format);
+        }
+        Commands::Leak { domain, format, no_hibp, no_github, no_lookalikes, lookback_days } => {
+            print_banner();
+            let mut opts = leak::LeakOpts::default();
+            if no_hibp        { opts.use_hibp       = false; }
+            if no_github      { opts.use_github     = false; }
+            if no_lookalikes  { opts.use_lookalikes = false; }
+            opts.lookalike_lookback_days = lookback_days;
+            let r = leak::run(&domain, &opts).await;
+            print_leak(&r, &format);
         }
         Commands::Version => {
             println!("cymail {} — Cybrium AI Email Scanner", env!("CARGO_PKG_VERSION"));
@@ -274,6 +304,61 @@ fn print_reputation(r: &reputation::ReputationReport, format: &str) {
                 k.key_bits.map(|n| n.to_string()).unwrap_or_else(|| "-".into()),
                 k.algorithm.clone().unwrap_or_default());
             if let Some(i) = &k.issue { eprintln!("              \x1b[2m{}\x1b[0m", i); }
+        }
+    }
+}
+
+fn print_leak(r: &leak::LeakReport, format: &str) {
+    if format == "json" {
+        println!("{}", serde_json::to_string_pretty(r).unwrap_or_default());
+        return;
+    }
+    eprintln!("  \x1b[35m\x1b[1mLeak telemetry\x1b[0m  domain: \x1b[1m{}\x1b[0m  ({} ms)\n", r.domain, r.elapsed_ms);
+    eprintln!("  Sources queried: {}", r.sources_queried.join(", "));
+
+    eprintln!("\n  \x1b[1mBreaches (HIBP)\x1b[0m");
+    if r.breaches.is_empty() {
+        eprintln!("    \x1b[32mno domain-wide breaches recorded\x1b[0m");
+    } else {
+        for b in &r.breaches {
+            let count = b.pwn_count.map(|n| format!("{n} accounts")).unwrap_or_default();
+            eprintln!("    \x1b[31m✗\x1b[0m {} ({})  {} {}",
+                b.title, b.breach_date.clone().unwrap_or_default(), count,
+                if !b.data_classes.is_empty() {
+                    format!("[{}]", b.data_classes.join(","))
+                } else { String::new() }
+            );
+        }
+    }
+
+    eprintln!("\n  \x1b[1mGitHub code hits\x1b[0m");
+    if r.github_leaks.is_empty() {
+        eprintln!("    none");
+    } else {
+        for h in r.github_leaks.iter().take(10) {
+            eprintln!("    {} — {}", h.repo, h.path);
+            eprintln!("      \x1b[2m{}\x1b[0m", h.html_url);
+        }
+        if r.github_leaks.len() > 10 {
+            eprintln!("    \x1b[2m… and {} more\x1b[0m", r.github_leaks.len() - 10);
+        }
+    }
+
+    eprintln!("\n  \x1b[1mLookalike domains\x1b[0m");
+    let issued: Vec<&leak::LookalikeHit> = r.lookalike_domains.iter().filter(|h| h.cert_issued).collect();
+    if issued.is_empty() {
+        eprintln!("    \x1b[32mno cert-bearing variants in lookback window\x1b[0m");
+    } else {
+        eprintln!("    \x1b[31m{} cert-bearing variants — somebody owns + provisioned these\x1b[0m", issued.len());
+        for h in issued {
+            eprintln!("    \x1b[31m✗\x1b[0m {:<32} ({:<14}) cert: {}",
+                h.variant, h.variant_type, h.recent_cert_at.clone().unwrap_or_default());
+        }
+    }
+    if !r.commercial_feeds.is_empty() {
+        eprintln!("\n  \x1b[1mCommercial feeds\x1b[0m");
+        for c in &r.commercial_feeds {
+            eprintln!("    {}: {}", c.feed, c.result);
         }
     }
 }
