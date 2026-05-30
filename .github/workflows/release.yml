@@ -90,6 +90,23 @@ jobs:
           mkdir dist
           cp target/${{ matrix.target }}/release/cymail.exe dist/${{ matrix.name }}
 
+      # ── MSI installer (Windows only) ───────────────────────────────
+      # cargo-wix builds a Windows MSI from wix/main.wxs, reusing the
+      # already-built release .exe. The MSI is signed alongside the
+      # standalone .exe (files-folder-filter widened to exe,msi).
+      - name: Install cargo-wix
+        if: runner.os == 'Windows'
+        run: cargo install cargo-wix --version 0.3.9
+
+      - name: Build MSI installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo wix --no-build --nocapture `
+            --target ${{ matrix.target }} `
+            --output dist\cymail-windows-amd64.msi
+          Get-ChildItem dist
+
       # ── Azure Trusted Signing (Windows binaries only) ──────────────
       # Federated OIDC — no client_secret. Subject filter on the FIC
       # is ref:refs/tags/v* so PR jobs literally cannot mint a token.
@@ -113,19 +130,22 @@ jobs:
           trusted-signing-account-name: cybrium-signing
           certificate-profile-name:     cybrium
           files-folder:                 dist
-          files-folder-filter:          exe
+          files-folder-filter:          exe,msi
           file-digest:                  SHA256
           timestamp-rfc3161:            http://timestamp.acs.microsoft.com
           timestamp-digest:             SHA256
 
-      - name: Verify Windows signature
+      - name: Verify Windows signatures (exe + msi)
         if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: |
-          $sig = Get-AuthenticodeSignature "dist/${{ matrix.name }}"
-          Write-Host "Signature status: $($sig.Status)"
-          Write-Host "Signer: $($sig.SignerCertificate.Subject)"
-          if ($sig.Status -ne 'Valid') { throw "Signature verification failed: $($sig.Status)" }
+          foreach ($file in @("dist/${{ matrix.name }}", "dist/cymail-windows-amd64.msi")) {
+            $sig = Get-AuthenticodeSignature $file
+            Write-Host "$file"
+            Write-Host "  Status: $($sig.Status)"
+            Write-Host "  Signer: $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'Valid') { throw "Signature verification failed for $file : $($sig.Status)" }
+          }
 
       - name: Notarize macOS binary
         if: matrix.sign
@@ -149,6 +169,13 @@ jobs:
         with:
           name: ${{ matrix.name }}
           path: dist/${{ matrix.name }}
+
+      - name: Upload MSI artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cymail-windows-amd64.msi
+          path: dist/cymail-windows-amd64.msi
 
   release:
     needs: build
@@ -177,6 +204,7 @@ jobs:
             artifacts/cymail-darwin-amd64/cymail-darwin-amd64
             artifacts/cymail-darwin-arm64/cymail-darwin-arm64
             artifacts/cymail-windows-amd64.exe/cymail-windows-amd64.exe
+            artifacts/cymail-windows-amd64.msi/cymail-windows-amd64.msi
             artifacts/checksums.txt
 
       # ── Auto-publish Homebrew formula to cybrium-ai/homebrew-cli ──
