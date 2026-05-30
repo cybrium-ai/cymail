@@ -6,6 +6,7 @@ mod output;
 mod discover;
 mod hardware_rot;
 mod attest;
+mod reputation;
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,19 @@ enum Commands {
     Attest {
         #[arg(short = 'f', long, default_value = "text")]
         format: String,
+    },
+    /// Reputation + trust signals — DNSBL, BIMI, DANE, DNSSEC, SPF-lookup-count, DKIM hygiene (v0.3 — P2).
+    Reputation {
+        #[arg(short, long)]
+        domain: String,
+        #[arg(short = 'f', long, default_value = "text")]
+        format: String,
+        /// Skip DNSWL / trust-list lookups.
+        #[arg(long)]
+        no_trust: bool,
+        /// Comma-separated DKIM selectors to probe in addition to defaults.
+        #[arg(long, value_delimiter = ',')]
+        dkim_selectors: Vec<String>,
     },
     Version,
 }
@@ -131,6 +145,14 @@ async fn main() {
             let r = attest::attest();
             print_attestation(&r, &format);
         }
+        Commands::Reputation { domain, format, no_trust, dkim_selectors } => {
+            print_banner();
+            let mut opts = reputation::ReputationOpts::default();
+            if no_trust { opts.include_trust = false; }
+            opts.dkim_selectors.extend(dkim_selectors.into_iter().filter(|s| !s.trim().is_empty()));
+            let r = reputation::run(&domain, &opts).await;
+            print_reputation(&r, &format);
+        }
         Commands::Version => {
             println!("cymail {} — Cybrium AI Email Scanner", env!("CARGO_PKG_VERSION"));
         }
@@ -195,5 +217,63 @@ fn print_attestation(r: &attest::AttestationReport, format: &str) {
     eprintln!("  ROT:     {} ({})", r.root_of_trust.kind.as_str(), if r.root_of_trust.present { "present" } else { "absent" });
     if !r.root_of_trust.vendor.is_empty() {
         eprintln!("  Vendor:  {}", r.root_of_trust.vendor);
+    }
+}
+
+fn print_reputation(r: &reputation::ReputationReport, format: &str) {
+    if format == "json" {
+        println!("{}", serde_json::to_string_pretty(r).unwrap_or_default());
+        return;
+    }
+    eprintln!("  \x1b[35m\x1b[1mReputation\x1b[0m  domain: \x1b[1m{}\x1b[0m  ({} ms)\n", r.domain, r.elapsed_ms);
+    eprintln!("  Provider:  {} ({})", r.provider.vendor, r.provider.category);
+    eprintln!("  DNSSEC:    {} (dnskey={}, ds={})",
+        if r.dnssec.signed { "\x1b[32msigned\x1b[0m" } else { "\x1b[33munsigned\x1b[0m" },
+        r.dnssec.dnskey_present, r.dnssec.ds_present);
+    eprintln!("  BIMI:      {}",
+        if r.bimi.configured { "\x1b[32mconfigured\x1b[0m" } else { "not configured" });
+    eprintln!("  SPF lookups: {}/{}{}",
+        r.spf_lookups.lookup_count, r.spf_lookups.limit,
+        if r.spf_lookups.over_limit { "  \x1b[31m← OVER LIMIT (RFC 7208 §4.6.4)\x1b[0m" } else { "" });
+
+    eprintln!("\n  \x1b[1mDNSBL\x1b[0m");
+    if r.dnsbl.blacklisted_listings > 0 {
+        eprintln!("    \x1b[31m{} blacklisted listings\x1b[0m, {} trust listings", r.dnsbl.blacklisted_listings, r.dnsbl.trust_listings);
+    } else {
+        eprintln!("    \x1b[32mclean\x1b[0m ({} blacklist queries, {} trust listings)", r.dnsbl.queries.iter().filter(|h| h.kind == "blacklist").count(), r.dnsbl.trust_listings);
+    }
+    for hit in &r.dnsbl.queries {
+        if hit.listed {
+            let mark = if hit.kind == "trust" { "\x1b[32m✓\x1b[0m" } else { "\x1b[31m✗\x1b[0m" };
+            eprintln!("    {} {:<32} {:<16} {}", mark, hit.list, hit.target, hit.return_codes.join(","));
+        }
+    }
+
+    eprintln!("\n  \x1b[1mDANE TLSA on MX\x1b[0m");
+    if r.dane.is_empty() {
+        eprintln!("    (no MX)");
+    } else {
+        for d in &r.dane {
+            let mark = if d.present { "\x1b[32m✓\x1b[0m" } else { "✗" };
+            eprintln!("    {} {}:25 — {}", mark, d.mx_host, if d.present { format!("{} records", d.records.len()) } else { "absent".into() });
+        }
+    }
+
+    eprintln!("\n  \x1b[1mDKIM key hygiene\x1b[0m");
+    if r.dkim_hygiene.is_empty() {
+        eprintln!("    no responsive selectors");
+    } else {
+        for k in &r.dkim_hygiene {
+            let color = match k.hygiene.as_str() {
+                "ok"      => "\x1b[32m",
+                "weak"    => "\x1b[33m",
+                _         => "\x1b[31m",
+            };
+            eprintln!("    {:<10} {}{:<10}\x1b[0m {} bits ({})",
+                k.selector, color, k.hygiene,
+                k.key_bits.map(|n| n.to_string()).unwrap_or_else(|| "-".into()),
+                k.algorithm.clone().unwrap_or_default());
+            if let Some(i) = &k.issue { eprintln!("              \x1b[2m{}\x1b[0m", i); }
+        }
     }
 }
