@@ -9,6 +9,7 @@ mod attest;
 mod reputation;
 mod reputation_ext;
 mod leak;
+mod ct_stream;
 mod export;
 mod scan;
 mod server;
@@ -79,7 +80,7 @@ enum Commands {
         #[arg(long)]
         no_senderscore: bool,
     },
-    /// Leak + impersonation telemetry — HIBP, GitHub code search, lookalike domains via crt.sh (v0.4 — P3).
+    /// Leak + impersonation telemetry — HIBP, GitHub code search, lookalike domains (v0.4 + v0.6.1 --watch).
     Leak {
         #[arg(short, long)]
         domain: String,
@@ -97,6 +98,13 @@ enum Commands {
         /// crt.sh cert lookback window for lookalikes (days).
         #[arg(long, default_value_t = 90)]
         lookback_days: u32,
+        /// Long-running mode: subscribe to certstream WS and emit JSON-line
+        /// per cert issued for a lookalike variant. Ignores other --no-* flags.
+        #[arg(long)]
+        watch: bool,
+        /// When --watch is set: exit after this many seconds. 0 = run forever.
+        #[arg(long, default_value_t = 0)]
+        watch_seconds: u64,
     },
     /// Start the embedded web UI (v0.5 — P4).
     Serve {
@@ -206,8 +214,25 @@ async fn main() {
 
             print_reputation(&r, &format);
         }
-        Commands::Leak { domain, format, no_hibp, no_github, no_lookalikes, lookback_days } => {
+        Commands::Leak { domain, format, no_hibp, no_github, no_lookalikes, lookback_days, watch, watch_seconds } => {
             print_banner();
+            if watch {
+                // Long-running CertStream watch mode (v0.6.1 — Sprint 98 P2).
+                let mut wopts = ct_stream::WatchOpts::default();
+                if watch_seconds > 0 {
+                    wopts.max_runtime = Some(std::time::Duration::from_secs(watch_seconds));
+                }
+                let r = ct_stream::watch(&domain, &wopts, |hit| {
+                    // Emit one JSON line per hit — pipeable to jq/SIEM.
+                    println!("{}", serde_json::to_string(&hit).unwrap_or_default());
+                }).await;
+                if let Err(e) = r {
+                    eprintln!("  watch error: {e}");
+                    std::process::exit(1);
+                }
+                return;
+            }
+
             let mut opts = leak::LeakOpts::default();
             if no_hibp        { opts.use_hibp       = false; }
             if no_github      { opts.use_github     = false; }

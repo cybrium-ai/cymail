@@ -1,6 +1,6 @@
 [package]
 name = "cymail"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 authors = ["Cybrium AI <hello@cybrium.ai>"]
 description = "Email security scanner — SPF/DKIM/DMARC posture, discovery, reputation, hardware-RoT attestation"
@@ -30,6 +30,10 @@ rand = "0.8"
 # verification + axum for the embedded web UI.
 sha2 = "0.10"
 axum = "0.7"
+# v0.6.1 — real-time CT log streaming via certstream WS.
+# Rustls-only TLS, matches reqwest's stack.
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots", "connect"], default-features = false }
+futures = "0.3"
 
 [profile.release]
 opt-level = 3

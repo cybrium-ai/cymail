@@ -243,7 +243,7 @@ async fn github_search(domain: &str, opts: &LeakOpts) -> Result<Vec<GitHubHit>, 
 //   - "secure-", "-mail" / "-pay" suffixes
 //
 // Limited to top 50 candidates per scan to keep crt.sh polite.
-fn generate_lookalikes(domain: &str) -> Vec<(String, String)> {
+pub(crate) fn generate_lookalikes(domain: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let parts: Vec<&str> = domain.rsplitn(2, '.').collect();
     if parts.len() < 2 { return out; }
