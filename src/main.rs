@@ -13,6 +13,7 @@ mod ct_stream;
 mod feeds;
 mod bimi;
 mod rua;
+mod header;
 mod export;
 mod scan;
 mod server;
@@ -145,6 +146,14 @@ enum Commands {
     Rua {
         #[command(subcommand)]
         cmd: RuaCmd,
+    },
+    /// Email header forensics — Received chain, ARC seals, DKIM body hash (v0.6.5 — P6).
+    Header {
+        /// Path to a raw email file (.eml). Use '-' to read from stdin.
+        #[arg(short, long)]
+        file: String,
+        #[arg(short = 'f', long, default_value = "text")]
+        format: String,
     },
     Version,
 }
@@ -315,6 +324,37 @@ async fn main() {
                             std::process::exit(1);
                         }
                     }
+                }
+            }
+        }
+        Commands::Header { file, format } => {
+            print_banner();
+            let path = std::path::PathBuf::from(&file);
+            match header::analyze(&path) {
+                Ok(r) => {
+                    if format == "json" {
+                        println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+                    } else {
+                        eprintln!("  \x1b[35m\x1b[1mHeader forensics\x1b[0m  file: \x1b[1m{}\x1b[0m\n", file);
+                        eprintln!("  From:       {}", r.from_address.clone().unwrap_or_default());
+                        eprintln!("  Subject:    {}", r.subject.clone().unwrap_or_default());
+                        eprintln!("  Message-ID: {}", r.message_id.clone().unwrap_or_default());
+                        eprintln!("\n  Received chain: {} hops", r.received.hops.len());
+                        eprintln!("  ARC instances:  {}", r.arc.instances.len());
+                        eprintln!("  DKIM body checks: {}", r.dkim_body_checks.len());
+                        if r.findings.is_empty() {
+                            eprintln!("\n  \x1b[32mNo findings.\x1b[0m");
+                        } else {
+                            eprintln!("\n  Findings:");
+                            for f in &r.findings {
+                                eprintln!("    [{}] {} — {}", f.severity.to_uppercase(), f.id, f.message);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  header analysis error: {e}");
+                    std::process::exit(1);
                 }
             }
         }
