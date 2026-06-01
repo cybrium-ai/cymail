@@ -7,6 +7,7 @@ mod discover;
 mod hardware_rot;
 mod attest;
 mod reputation;
+mod reputation_ext;
 mod leak;
 mod export;
 mod scan;
@@ -59,7 +60,7 @@ enum Commands {
         #[arg(short = 'f', long, default_value = "text")]
         format: String,
     },
-    /// Reputation + trust signals — DNSBL, BIMI, DANE, DNSSEC, SPF-lookup-count, DKIM hygiene (v0.3 — P2).
+    /// Reputation + trust signals — DNSBL, BIMI, DANE, DNSSEC, SPF-lookup-count, DKIM hygiene + Sender Score + Talos (v0.6).
     Reputation {
         #[arg(short, long)]
         domain: String,
@@ -71,6 +72,12 @@ enum Commands {
         /// Comma-separated DKIM selectors to probe in addition to defaults.
         #[arg(long, value_delimiter = ',')]
         dkim_selectors: Vec<String>,
+        /// Skip Cisco Talos reputation lookup (default: on).
+        #[arg(long)]
+        no_talos: bool,
+        /// Skip Sender Score lookups even if SENDERSCORE_API_KEY is set.
+        #[arg(long)]
+        no_senderscore: bool,
     },
     /// Leak + impersonation telemetry — HIBP, GitHub code search, lookalike domains via crt.sh (v0.4 — P3).
     Leak {
@@ -184,12 +191,19 @@ async fn main() {
             let r = attest::attest();
             print_attestation(&r, &format);
         }
-        Commands::Reputation { domain, format, no_trust, dkim_selectors } => {
+        Commands::Reputation { domain, format, no_trust, dkim_selectors, no_talos, no_senderscore } => {
             print_banner();
             let mut opts = reputation::ReputationOpts::default();
             if no_trust { opts.include_trust = false; }
             opts.dkim_selectors.extend(dkim_selectors.into_iter().filter(|s| !s.trim().is_empty()));
-            let r = reputation::run(&domain, &opts).await;
+            let mut r = reputation::run(&domain, &opts).await;
+
+            // v0.6.0 — decorate with Sender Score + Talos.
+            let mut ext_opts = reputation_ext::ExtOpts::default();
+            if no_talos        { ext_opts.use_talos        = false; }
+            if no_senderscore  { ext_opts.sender_score_key = None;  }
+            r.extensions = Some(reputation_ext::decorate(&r, &ext_opts).await);
+
             print_reputation(&r, &format);
         }
         Commands::Leak { domain, format, no_hibp, no_github, no_lookalikes, lookback_days } => {

@@ -40,6 +40,11 @@ pub struct ReputationReport {
     pub dkim_hygiene:     Vec<DkimKeyResult>,
     pub provider:         ProviderFingerprint,
     pub elapsed_ms:       u64,
+    /// v0.6.0 (Sprint 98 P1) — Sender Score + Cisco Talos.
+    /// Optional + skip-serialize-if-none so older JSON consumers
+    /// don't see a new mandatory field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions:       Option<crate::reputation_ext::ReputationExtensions>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,6 +163,7 @@ pub async fn run(domain: &str, opts: &ReputationOpts) -> ReputationReport {
         dkim_hygiene,
         provider,
         elapsed_ms:   started.elapsed().as_millis() as u64,
+        extensions:   None,
     }
 }
 
@@ -174,6 +180,7 @@ fn empty_report(domain: &str) -> ReputationReport {
         dkim_hygiene: Vec::new(),
         provider: ProviderFingerprint { vendor: "unknown".into(), category: "unknown".into(), mx_match: Vec::new() },
         elapsed_ms: 0,
+        extensions: None,
     }
 }
 
