@@ -69,6 +69,11 @@ pub struct BimiResult {
     pub record:     Option<String>,
     pub svg_url:    Option<String>,
     pub vmc_url:    Option<String>,
+    /// v0.6.3 (Sprint 98 P4) — populated only when configured=true
+    /// AND at least one of svg_url/vmc_url is set. Skip-if-none to
+    /// keep older JSON consumers happy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vmc_validation: Option<crate::bimi::VmcValidation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,7 +178,7 @@ fn empty_report(domain: &str) -> ReputationReport {
         scanned_at: chrono::Utc::now().to_rfc3339(),
         mx_hosts: Vec::new(),
         dnsbl: DnsblSummary { queries: Vec::new(), blacklisted_listings: 0, trust_listings: 0 },
-        bimi:  BimiResult  { configured: false, record: None, svg_url: None, vmc_url: None },
+        bimi:  BimiResult  { configured: false, record: None, svg_url: None, vmc_url: None, vmc_validation: None },
         dane:  Vec::new(),
         dnssec: DnssecResult { dnskey_present: false, ds_present: false, signed: false },
         spf_lookups: SpfLookupResult { record: None, lookup_count: 0, limit: 10, over_limit: false, includes: Vec::new() },
@@ -290,19 +295,48 @@ async fn bl_lookup(resolver: &hickory_resolver::TokioResolver, q: &str) -> (bool
 // ─── BIMI ──────────────────────────────────────────────────────────
 async fn bimi_lookup(resolver: &hickory_resolver::TokioResolver, domain: &str) -> BimiResult {
     let q = format!("default._bimi.{domain}");
-    match resolver.txt_lookup(&q).await {
+    let base = match resolver.txt_lookup(&q).await {
         Ok(resp) => {
+            let mut found = None;
             for r in resp.iter() {
                 let s = r.to_string();
                 if s.contains("v=BIMI1") {
                     let svg = s.split(';').find_map(|p| p.trim().strip_prefix("l=")).map(|v| v.trim().to_string());
                     let vmc = s.split(';').find_map(|p| p.trim().strip_prefix("a=")).map(|v| v.trim().to_string());
-                    return BimiResult { configured: true, record: Some(s), svg_url: svg, vmc_url: vmc };
+                    found = Some(BimiResult {
+                        configured: true, record: Some(s),
+                        svg_url: svg, vmc_url: vmc,
+                        vmc_validation: None,
+                    });
+                    break;
                 }
             }
-            BimiResult { configured: false, record: None, svg_url: None, vmc_url: None }
+            found.unwrap_or(BimiResult {
+                configured: false, record: None,
+                svg_url: None, vmc_url: None, vmc_validation: None,
+            })
         }
-        Err(_) => BimiResult { configured: false, record: None, svg_url: None, vmc_url: None },
+        Err(_) => BimiResult {
+            configured: false, record: None,
+            svg_url: None, vmc_url: None, vmc_validation: None,
+        },
+    };
+
+    // v0.6.3 — if BIMI is configured AND at least one URL is set,
+    // run the PKIX chain validation. We do this in the same lookup
+    // so the report carries the validation inline with no extra
+    // top-level field.
+    if base.configured && (base.svg_url.is_some() || base.vmc_url.is_some()) {
+        let opts = crate::bimi::VmcOpts::default();
+        let v = crate::bimi::validate(
+            domain,
+            base.svg_url.as_deref(),
+            base.vmc_url.as_deref(),
+            &opts,
+        ).await;
+        BimiResult { vmc_validation: Some(v), ..base }
+    } else {
+        base
     }
 }
 

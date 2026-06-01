@@ -11,6 +11,7 @@ mod reputation_ext;
 mod leak;
 mod ct_stream;
 mod feeds;
+mod bimi;
 mod export;
 mod scan;
 mod server;
