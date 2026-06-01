@@ -1,6 +1,6 @@
 [package]
 name = "cymail"
-version = "0.6.2"
+version = "0.6.3"
 edition = "2021"
 authors = ["Cybrium AI <hello@cybrium.ai>"]
 description = "Email security scanner — SPF/DKIM/DMARC posture, discovery, reputation, hardware-RoT attestation"
@@ -34,6 +34,12 @@ axum = "0.7"
 # Rustls-only TLS, matches reqwest's stack.
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots", "connect"], default-features = false }
 futures = "0.3"
+# v0.6.3 — BIMI VMC PKIX chain validation. x509-parser is the pure-Rust
+# DER walker; oid-registry + time come along as direct deps so the
+# code can spell out the BIMI EKU OID and compare against validity.
+x509-parser  = "0.16"
+oid-registry = "0.7"
+time         = "0.3"
 
 [profile.release]
 opt-level = 3
