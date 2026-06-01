@@ -1,6 +1,6 @@
 [package]
 name = "cymail"
-version = "0.6.3"
+version = "0.6.4"
 edition = "2021"
 authors = ["Cybrium AI <hello@cybrium.ai>"]
 description = "Email security scanner — SPF/DKIM/DMARC posture, discovery, reputation, hardware-RoT attestation"
@@ -40,6 +40,10 @@ futures = "0.3"
 x509-parser  = "0.16"
 oid-registry = "0.7"
 time         = "0.3"
+# v0.6.4 — DMARC aggregate (RUA) XML parser + .zip/.gz unpack.
+quick-xml = { version = "0.36", features = ["serialize"] }
+flate2    = "1"
+zip       = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 opt-level = 3
