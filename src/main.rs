@@ -12,6 +12,7 @@ mod leak;
 mod ct_stream;
 mod feeds;
 mod bimi;
+mod rua;
 mod export;
 mod scan;
 mod server;
@@ -26,6 +27,24 @@ use serde::{Deserialize, Serialize};
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Subcommand)]
+enum RuaCmd {
+    /// Parse one .xml / .xml.gz / .zip → JSON to stdout.
+    Parse {
+        #[arg(short, long)]
+        file: String,
+    },
+    /// Walk a directory + aggregate every report into a JSON rollup.
+    Aggregate {
+        #[arg(short, long)]
+        dir:    String,
+        /// Filter to records whose policy_domain matches this. Use ""
+        /// to include all domains (orphans counted separately).
+        #[arg(short = 'D', long, default_value = "")]
+        domain: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -121,6 +140,11 @@ enum Commands {
         /// Print what would happen but don't actually swap the binary.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// DMARC aggregate (RUA) report parser + rollup (v0.6.4 — P5).
+    Rua {
+        #[command(subcommand)]
+        cmd: RuaCmd,
     },
     Version,
 }
@@ -263,6 +287,35 @@ async fn main() {
                     println!("  bytes written: {}", r.bytes_written);
                 }
                 Err(e) => eprintln!("  update failed: {e}"),
+            }
+        }
+        Commands::Rua { cmd } => {
+            print_banner();
+            match cmd {
+                RuaCmd::Parse { file } => {
+                    let path = std::path::Path::new(&file);
+                    match rua::parse_file(path) {
+                        Ok(reports) => {
+                            println!("{}", serde_json::to_string_pretty(&reports).unwrap_or_default());
+                        }
+                        Err(e) => {
+                            eprintln!("  parse error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                RuaCmd::Aggregate { dir, domain } => {
+                    let path = std::path::Path::new(&dir);
+                    match rua::rollup_dir(path, &domain) {
+                        Ok(rollup) => {
+                            println!("{}", serde_json::to_string_pretty(&rollup).unwrap_or_default());
+                        }
+                        Err(e) => {
+                            eprintln!("  aggregate error: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
             }
         }
         Commands::Upgrade { dry_run } => {
