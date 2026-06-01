@@ -36,7 +36,14 @@ pub struct LeakReport {
     pub github_leaks:      Vec<GitHubHit>,
     pub paste_leaks:       Vec<PasteHit>,
     pub lookalike_domains: Vec<LookalikeHit>,
+    /// Legacy (v0.4) — kept for backwards compat with any external
+    /// consumer that learned to read it. Mirrors commercial_feeds_v2
+    /// shape-loss: bool + summary string only.
     pub commercial_feeds:  Vec<CommercialFeedResult>,
+    /// v0.6.2 (Sprint 98 P3) — full structured breach records from
+    /// each configured provider. Empty when no keys are set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commercial_feeds_v2: Vec<crate::feeds::FeedResult>,
     pub elapsed_ms:        u64,
     pub sources_queried:   Vec<String>,
 }
@@ -136,26 +143,43 @@ pub async fn run(domain: &str, opts: &LeakOpts) -> LeakReport {
         lookalike_scan(domain, opts.lookalike_lookback_days, opts.http_timeout).await
     } else { Vec::new() };
 
-    let mut commercial_feeds = Vec::new();
-    if opts.dehashed_key.is_some() {
-        sources.push("dehashed".to_string());
-        commercial_feeds.push(CommercialFeedResult {
-            feed: "dehashed".into(), queried: false,
-            result: "stub — wire on demand; key supplied".into(),
-        });
+    // v0.6.2 — wire real commercial-feed clients. Each provider is
+    // independently optional via its own env var; the run_all() helper
+    // handles per-feed skipping + 24h disk cache automatically.
+    let feed_opts = crate::feeds::FeedOpts {
+        http_timeout: opts.http_timeout,
+        cache_ttl:    std::time::Duration::from_secs(60 * 60 * 24),
+        max_records:  500,
+        dehashed_key: opts.dehashed_key.clone(),
+        intelx_key:   opts.intelx_key.clone(),
+        snusbase_key: std::env::var("SNUSBASE_API_KEY").ok(),
+    };
+    let commercial_feeds_v2 = crate::feeds::run_all(domain, &feed_opts).await;
+    for fr in &commercial_feeds_v2 {
+        if fr.queried { sources.push(fr.feed.clone()); }
     }
-    if opts.intelx_key.is_some() {
-        sources.push("intelx".to_string());
-        commercial_feeds.push(CommercialFeedResult {
-            feed: "intelx".into(), queried: false,
-            result: "stub — wire on demand; key supplied".into(),
-        });
-    }
+    // Legacy compat surface: keep the v0.4-shaped commercial_feeds
+    // alongside the new structured one. Older consumers see the same
+    // legacy field; new consumers read commercial_feeds_v2.
+    let commercial_feeds: Vec<CommercialFeedResult> = commercial_feeds_v2.iter().map(|fr| {
+        CommercialFeedResult {
+            feed:    fr.feed.clone(),
+            queried: fr.queried,
+            result:  if fr.queried {
+                format!("{} records{}",
+                    fr.record_count,
+                    if fr.from_cache { " (cached)" } else { "" })
+            } else {
+                fr.error.clone().unwrap_or_else(|| "skipped".to_string())
+            },
+        }
+    }).collect();
 
     LeakReport {
         domain:            domain.into(),
         scanned_at:        chrono::Utc::now().to_rfc3339(),
         breaches,
+        commercial_feeds_v2,
         github_leaks,
         paste_leaks,
         lookalike_domains,
