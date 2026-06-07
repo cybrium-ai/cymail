@@ -19,6 +19,7 @@ mod scan;
 mod server;
 mod update;
 mod upgrade;
+mod smtp;
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -152,6 +153,13 @@ enum Commands {
         /// Path to a raw email file (.eml). Use '-' to read from stdin.
         #[arg(short, long)]
         file: String,
+        #[arg(short = 'f', long, default_value = "text")]
+        format: String,
+    },
+    /// SMTP posture probe — MX reachability, STARTTLS, certificate validity, open-relay (v0.7.0 — Sprint 119).
+    Smtp {
+        #[arg(short, long)]
+        domain: String,
         #[arg(short = 'f', long, default_value = "text")]
         format: String,
     },
@@ -370,8 +378,59 @@ async fn main() {
                 }
             }
         }
+        Commands::Smtp { domain, format } => {
+            print_banner();
+            let r = smtp::probe(&domain).await;
+            print_smtp(&r, &format);
+        }
         Commands::Version => {
             println!("cymail {} — Cybrium AI Email Scanner", env!("CARGO_PKG_VERSION"));
+        }
+    }
+}
+
+fn print_smtp(r: &smtp::SmtpReport, format: &str) {
+    use colored::Colorize;
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(r).unwrap_or_default()),
+        _ => {
+            eprintln!("  {} {} — {} MX host(s) probed in {} ms\n",
+                "SMTP".magenta().bold(), r.domain.white(), r.mx_hosts.len(), r.elapsed_ms);
+            for mx in &r.mx_hosts {
+                let status = if mx.port25.reachable { "✓".green().to_string() } else { "✗".red().to_string() };
+                eprintln!("  {} {} (pref {})", status, mx.host, mx.preference);
+                if let Some(b) = &mx.port25.banner {
+                    eprintln!("    banner   {}", b.lines().next().unwrap_or("").trim());
+                }
+                if !mx.port25.ehlo.is_empty() {
+                    let starttls = if mx.port25.ehlo.iter().any(|v| v.eq_ignore_ascii_case("STARTTLS")) { "STARTTLS✓" } else { "STARTTLS✗" };
+                    eprintln!("    ehlo     {} ({} verbs)", starttls, mx.port25.ehlo.len());
+                }
+                if let Some(tls) = &mx.port25.starttls {
+                    if tls.upgraded {
+                        eprintln!("    tls      {} {} day(s) remaining",
+                            tls.tls_version.as_deref().unwrap_or("?"),
+                            tls.cert_days_remaining.unwrap_or(0));
+                    } else {
+                        eprintln!("    tls      failed: {}", tls.error.as_deref().unwrap_or("?"));
+                    }
+                }
+                if mx.port25.open_relay == Some(true) {
+                    eprintln!("    {} open relay accepted", "WARN".red().bold());
+                }
+            }
+            if !r.findings.is_empty() {
+                eprintln!();
+                for f in &r.findings {
+                    let sev_colored = match f.severity.as_str() {
+                        "critical" => f.severity.to_uppercase().red().bold().to_string(),
+                        "high"     => f.severity.to_uppercase().red().to_string(),
+                        "medium"   => f.severity.to_uppercase().yellow().to_string(),
+                        _          => f.severity.to_uppercase(),
+                    };
+                    eprintln!("  [{}] {} — {}", sev_colored, f.id.bold(), f.title);
+                }
+            }
         }
     }
 }
